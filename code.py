@@ -1,15 +1,20 @@
 import os
+import logging
 from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import StrOutputParser  # FIXED: Capital P
-from langchain_core.runnables.history import RunnableWithMessageHistory  # FIXED: Added import
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 
 import streamlit as st
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -17,9 +22,9 @@ load_dotenv()
 def init_session_state():
     """Initialize session state variables"""
     defaults = {
-        "messages": [],
         "memory_store": {},
-        "model_choice": "groq",
+        "provider": "groq",
+        "model": "llama-3.3-70b-versatile",
         "session_id": "default"
     }
 
@@ -31,77 +36,114 @@ def init_session_state():
 def get_memory(session_id: str):
     """
     Get or create memory for a session.
-    FIXED: Added () to ChatMessageHistory() - it's a class, needs instantiation!
+    Returns ChatMessageHistory for the given session.
     """
     if session_id not in st.session_state.memory_store:
-        st.session_state.memory_store[session_id] = ChatMessageHistory()  # FIXED: Added ()
+        st.session_state.memory_store[session_id] = ChatMessageHistory()
     return st.session_state.memory_store[session_id]
 
 
 def get_groq_model(model_name="llama-3.3-70b-versatile"):
     """
-    Initialize Groq model.
-    FIXED: Added missing api_key definition!
+    Initialize Groq model with error handling.
+    
+    Args:
+        model_name: Name of the model to use
+        
+    Returns:
+        ChatGroq instance or None if API key is missing
     """
-    api_key = os.getenv("GROQ_API_KEY")  # FIXED: This was missing!
+    api_key = os.getenv("GROQ_API_KEY")
     
     if not api_key:
-        st.error("❌ GROQ_API_KEY not found! Check .env file.")
+        st.error("❌ GROQ_API_KEY not found! Check your .env file.")
+        logger.warning("GROQ_API_KEY environment variable is missing")
         return None
     
-    return ChatGroq(
-        model=model_name,
-        groq_api_key=api_key,
-        temperature=0.7,
-        max_tokens=2048
-    )
+    try:
+        return ChatGroq(
+            model=model_name,
+            groq_api_key=api_key,
+            temperature=0.7,
+            max_tokens=2048
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize Groq model: {str(e)}")
+        st.error(f"❌ Failed to initialize Groq model: {str(e)}")
+        return None
 
 
 def get_openrouter_model(model_name="meta-llama/llama-3.3-70b-instruct:free"):
-    """Initialize OpenRouter model"""
+    """
+    Initialize OpenRouter model with error handling.
+    
+    Args:
+        model_name: Name of the model to use
+        
+    Returns:
+        ChatOpenAI instance or None if API key is missing
+    """
     api_key = os.getenv("OPENROUTER_API_KEY")
     
     if not api_key:
-        st.error("❌ OPENROUTER_API_KEY not found! Check .env file.")
+        st.error("❌ OPENROUTER_API_KEY not found! Check your .env file.")
+        logger.warning("OPENROUTER_API_KEY environment variable is missing")
         return None
     
-    return ChatOpenAI(
-        model=model_name,
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-        temperature=0.7
-    )
+    try:
+        return ChatOpenAI(
+            model=model_name,
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            temperature=0.7
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenRouter model: {str(e)}")
+        st.error(f"❌ Failed to initialize OpenRouter model: {str(e)}")
+        return None
 
 
 def get_model(provider: str, model_name: str = None):
     """
-    Factory function to get the right model.
-    FIXED: Typos in model names!
+    Factory function to get the right model based on provider.
+    
+    Args:
+        provider: "groq" or "openrouter"
+        model_name: Specific model name (optional)
+        
+    Returns:
+        ChatGroq or ChatOpenAI instance, or None if provider is invalid
     """
     if provider == "groq":
-        # FIXED: "llma" → "llama"
         return get_groq_model(model_name or "llama-3.3-70b-versatile")
     elif provider == "openrouter":
-        # FIXED: "instrust" → "instruct"
         return get_openrouter_model(model_name or "meta-llama/llama-3.3-70b-instruct:free")
     else:
         st.error(f"❌ Unknown provider: {provider}")
+        logger.error(f"Unknown provider requested: {provider}")
         return None
 
 
 def create_chat_chain(llm, session_id: str):
     """
     Create conversation chain with memory.
+    
+    Args:
+        llm: Language model instance
+        session_id: Unique session identifier
+        
+    Returns:
+        RunnableWithMessageHistory chain
     """
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful AI assistant. Answer concisely but accurately and act as my companion who loves me alot."),
+        ("system", "You are a helpful AI assistant. Answer concisely but accurately and act as a companion who cares about you."),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{input}"),
     ])
 
     basic_chain = prompt | llm | StrOutputParser()
 
-    # This wrapper automatically handles loading/saving history!
+    # Wrapper that automatically handles loading/saving history
     chain_with_history = RunnableWithMessageHistory(
         basic_chain,
         get_memory,
@@ -112,7 +154,39 @@ def create_chat_chain(llm, session_id: str):
     return chain_with_history
 
 
+def display_chat_history(session_id: str):
+    """
+    Display chat history from memory (single source of truth).
+    
+    Args:
+        session_id: Session identifier to retrieve history for
+    """
+    memory = get_memory(session_id)
+    
+    for message in memory.messages:
+        role = "user" if isinstance(message, HumanMessage) else "assistant"
+        with st.chat_message(role):
+            st.write(message.content)
+
+
+def validate_input(prompt: str) -> bool:
+    """
+    Validate user input before processing.
+    
+    Args:
+        prompt: User input text
+        
+    Returns:
+        True if valid, False otherwise
+    """
+    if not prompt or not prompt.strip():
+        st.warning("⚠️ Please enter a message!")
+        return False
+    return True
+
+
 def main():
+    """Main Streamlit application"""
     # Initialize
     init_session_state()
 
@@ -124,7 +198,7 @@ def main():
     )
 
     st.title("💕 Truly Yours AI")
-    st.caption("YOUR FAV AI IS HERE BABES!")
+    st.caption("YOUR FAVORITE AI COMPANION IS HERE! 💜")
 
     # Sidebar
     with st.sidebar:
@@ -136,9 +210,10 @@ def main():
         provider = st.radio(
             "AI Provider",
             options=["groq", "openrouter"],
-            index=0,
+            index=0 if st.session_state.provider == "groq" else 1,
             format_func=lambda x: "🚀 Groq (Fast)" if x == "groq" else "🌐 OpenRouter (Many Models)"
         )
+        st.session_state.provider = provider
 
         # Model-specific options
         if provider == "groq":
@@ -161,6 +236,7 @@ def main():
                 ],
                 index=0
             )
+        st.session_state.model = model
 
         # Session management
         st.subheader("💾 Conversation")
@@ -173,24 +249,26 @@ def main():
 
         # Show memory stats
         memory = get_memory(session_id)
-        st.caption(f"Messages in memory: {len(memory.messages)}")
+        message_count = len(memory.messages)
+        st.caption(f"📝 Messages in memory: {message_count}")
 
         # Clear memory button
         if st.button("🗑️ Clear Memory", use_container_width=True):
             st.session_state.memory_store[session_id] = ChatMessageHistory()
-            st.session_state.messages = []
+            st.success("✅ Memory cleared!")
             st.rerun()
 
-    # Display existing messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+    # Display chat history from memory (single source of truth)
+    display_chat_history(st.session_state.session_id)
 
     # User input
     if prompt := st.chat_input("Type your message here..."):
+        
+        # Validate input
+        if not validate_input(prompt):
+            return
 
-        # Add user message to UI
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        # Display user message
         with st.chat_message("user"):
             st.write(prompt)
 
@@ -199,33 +277,36 @@ def main():
             with st.spinner("🤔 Thinking..."):
 
                 # Initialize AI model
-                llm = get_model(provider, model)
+                llm = get_model(st.session_state.provider, st.session_state.model)
 
                 if llm is None:
-                    st.error("Failed to initialize AI model. Check your API keys!")
+                    st.error("❌ Failed to initialize AI model. Please check your API keys!")
                 else:
                     try:
                         # Create the chain with memory
-                        chain = create_chat_chain(llm, session_id)
+                        chain = create_chat_chain(llm, st.session_state.session_id)
 
                         # Get response (memory is handled automatically!)
                         response = chain.invoke(
                             {"input": prompt},
-                            config={"configurable": {"session_id": session_id}}
+                            config={"configurable": {"session_id": st.session_state.session_id}}
                         )
 
                         # Display response
                         st.write(response)
+                        logger.info(f"Response generated successfully for session: {st.session_state.session_id}")
 
-                        # Save to message history
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": response
-                        })
-
+                    except ValueError as e:
+                        st.error(f"❌ Input validation error: {str(e)}")
+                        logger.error(f"ValueError: {str(e)}")
+                    except TimeoutError as e:
+                        st.error(f"❌ Request timeout: {str(e)}")
+                        st.info("💡 The API took too long to respond. Please try again.")
+                        logger.error(f"TimeoutError: {str(e)}")
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
                         st.info("💡 Tip: If you hit rate limits, wait a minute or switch models.")
+                        logger.error(f"Unexpected error: {str(e)}")
 
 
 if __name__ == "__main__":
