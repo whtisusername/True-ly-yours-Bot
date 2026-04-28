@@ -94,7 +94,7 @@ def create_chat_chain(llm, session_id: str):
     Create conversation chain with memory.
     """
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful AI assistant. Answer concisely but accurately. and your my therpist."),
+        ("system", "You are a helpful AI assistant. Answer concisely but accurately and act as my companion who loves me alot."),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{input}"),
     ])
